@@ -243,7 +243,7 @@ public class PeerGroupTest extends TestWithPeerGroup {
         // Create a peer.
         InboundMessageQueuer p1 = connectPeer(1);
         
-        Wallet wallet2 = Wallet.createDeterministic(UNITTEST, Script.ScriptType.P2PKH);
+        Wallet wallet2 = new Wallet(UNITTEST);
         ECKey key2 = wallet2.freshReceiveKey();
         Address address2 = LegacyAddress.fromKey(UNITTEST, key2);
         
@@ -419,7 +419,7 @@ public class PeerGroupTest extends TestWithPeerGroup {
         final long now = Utils.currentTimeSeconds();
         peerGroup.start();
         assertTrue(peerGroup.getFastCatchupTimeSecs() > now - WEEK - 10000);
-        Wallet w2 = Wallet.createDeterministic(UNITTEST, Script.ScriptType.P2PKH);
+        Wallet w2 = new Wallet(UNITTEST);
         ECKey key1 = new ECKey();
         key1.setCreationTimeSeconds(now - 86400);  // One day ago.
         w2.importKey(key1);
@@ -607,8 +607,8 @@ public class PeerGroupTest extends TestWithPeerGroup {
     }
 
     @Test
-    public void testBloomOnP2PK() throws Exception {
-        // Cover bug 513. When a relevant transaction with a P2PK output is found, the Bloom filter should be
+    public void testBloomOnP2Pubkey() throws Exception {
+        // Cover bug 513. When a relevant transaction with a p2pubkey output is found, the Bloom filter should be
         // recalculated to include that transaction hash but not re-broadcast as the remote nodes should have followed
         // the same procedure. However a new node that's connected should get the fresh filter.
         peerGroup.start();
@@ -616,13 +616,12 @@ public class PeerGroupTest extends TestWithPeerGroup {
         // Create a couple of peers.
         InboundMessageQueuer p1 = connectPeer(1);
         InboundMessageQueuer p2 = connectPeer(2);
-        // Create a P2PK tx.
+        // Create a pay to pubkey tx.
         Transaction tx = FakeTxBuilder.createFakeTx(UNITTEST, COIN, key);
         Transaction tx2 = new Transaction(UNITTEST);
         tx2.addInput(tx.getOutput(0));
         TransactionOutPoint outpoint = tx2.getInput(0).getOutpoint();
         assertTrue(p1.lastReceivedFilter.contains(key.getPubKey()));
-        assertTrue(p1.lastReceivedFilter.contains(key.getPubKeyHash()));
         assertFalse(p1.lastReceivedFilter.contains(tx.getTxId().getBytes()));
         inbound(p1, tx);
         // p1 requests dep resolution, p2 is quiet.
@@ -636,7 +635,6 @@ public class PeerGroupTest extends TestWithPeerGroup {
         // Now we connect p3 and there is a new bloom filter sent, that DOES match the relevant outpoint.
         InboundMessageQueuer p3 = connectPeer(3);
         assertTrue(p3.lastReceivedFilter.contains(key.getPubKey()));
-        assertTrue(p3.lastReceivedFilter.contains(key.getPubKeyHash()));
         assertTrue(p3.lastReceivedFilter.contains(outpoint.unsafeBitcoinSerialize()));
     }
 
@@ -797,7 +795,7 @@ public class PeerGroupTest extends TestWithPeerGroup {
         assertNextMessageIs(p1, GetBlocksMessage.class);
 
         // Make some transactions and blocks that send money to the wallet thus using up all the keys.
-        List<Block> blocks = new ArrayList<>();
+        List<Block> blocks = Lists.newArrayList();
         Coin expectedBalance = Coin.ZERO;
         Block prev = blockStore.getChainHead().getHeader();
         for (ECKey key1 : keys) {

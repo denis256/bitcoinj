@@ -28,7 +28,6 @@ import java.io.*;
 import java.math.*;
 import java.util.*;
 
-import static com.google.common.base.Preconditions.checkState;
 import static org.bitcoinj.core.Coin.*;
 import static org.bitcoinj.core.Sha256Hash.*;
 
@@ -93,13 +92,13 @@ public class Block extends Message {
     // Fields defined as part of the protocol format.
     private long version;
     private Sha256Hash prevBlockHash;
-    private Sha256Hash merkleRoot, witnessRoot;
+    private Sha256Hash merkleRoot;
     private long time;
     private long difficultyTarget; // "nBits"
     private long nonce;
 
-    // If null, it means this object holds only the headers.
-    @VisibleForTesting
+    // TODO: Get rid of all the direct accesses to this field. It's a long-since unnecessary holdover from the Dalvik days.
+    /** If null, it means this object holds only the headers. */
     @Nullable List<Transaction> transactions;
 
     /** Stores the hash of the block. If null, getHash() will recalculate it. */
@@ -304,9 +303,11 @@ public class Block extends Message {
             return;
         }
 
-        stream.write(new VarInt(transactions.size()).encode());
-        for (Transaction tx : transactions) {
-            tx.bitcoinSerialize(stream);
+        if (transactions != null) {
+            stream.write(new VarInt(transactions.size()).encode());
+            for (Transaction tx : transactions) {
+                tx.bitcoinSerialize(stream);
+            }
         }
     }
 
@@ -483,12 +484,11 @@ public class Block extends Message {
             s.append(" (").append(bips).append(')');
         s.append('\n');
         s.append("   previous block: ").append(getPrevBlockHash()).append("\n");
+        s.append("   merkle root: ").append(getMerkleRoot()).append("\n");
         s.append("   time: ").append(time).append(" (").append(Utils.dateTimeFormat(time * 1000)).append(")\n");
         s.append("   difficulty target (nBits): ").append(difficultyTarget).append("\n");
         s.append("   nonce: ").append(nonce).append("\n");
         if (transactions != null && transactions.size() > 0) {
-            s.append("   merkle root: ").append(getMerkleRoot()).append("\n");
-            s.append("   witness root: ").append(getWitnessRoot()).append("\n");
             s.append("   with ").append(transactions.size()).append(" transaction(s):\n");
             for (Transaction tx : transactions) {
                 s.append(tx).append('\n');
@@ -581,43 +581,12 @@ public class Block extends Message {
         }
     }
 
-    @VisibleForTesting
-    void checkWitnessRoot() throws VerificationException {
-        Transaction coinbase = transactions.get(0);
-        checkState(coinbase.isCoinBase());
-        Sha256Hash witnessCommitment = coinbase.findWitnessCommitment();
-        if (witnessCommitment != null) {
-            byte[] witnessReserved = null;
-            TransactionWitness witness = coinbase.getInput(0).getWitness();
-            if (witness.getPushCount() != 1)
-                throw new VerificationException("Coinbase witness reserved invalid: push count");
-            witnessReserved = witness.getPush(0);
-            if (witnessReserved.length != 32)
-                throw new VerificationException("Coinbase witness reserved invalid: length");
-
-            Sha256Hash witnessRootHash = Sha256Hash.twiceOf(getWitnessRoot().getReversedBytes(), witnessReserved);
-            if (!witnessRootHash.equals(witnessCommitment))
-                throw new VerificationException("Witness merkle root invalid. Expected " + witnessCommitment.toString()
-                        + " but got " + witnessRootHash.toString());
-        } else {
-            for (Transaction tx : transactions) {
-                if (tx.hasWitnesses())
-                    throw new VerificationException("Transaction witness found but no witness commitment present");
-            }
-        }
-    }
-
     private Sha256Hash calculateMerkleRoot() {
-        List<byte[]> tree = buildMerkleTree(false);
+        List<byte[]> tree = buildMerkleTree();
         return Sha256Hash.wrap(tree.get(tree.size() - 1));
     }
 
-    private Sha256Hash calculateWitnessRoot() {
-        List<byte[]> tree = buildMerkleTree(true);
-        return Sha256Hash.wrap(tree.get(tree.size() - 1));
-    }
-
-    private List<byte[]> buildMerkleTree(boolean useWTxId) {
+    private List<byte[]> buildMerkleTree() {
         // The Merkle root is based on a tree of hashes calculated from the transactions:
         //
         //     root
@@ -648,15 +617,10 @@ public class Block extends Message {
         //    2     3    4  4
         //  / \   / \   / \
         // t1 t2 t3 t4 t5 t5
-        ArrayList<byte[]> tree = new ArrayList<>(transactions.size());
+        ArrayList<byte[]> tree = new ArrayList<>();
         // Start by adding all the hashes of the transactions as leaves of the tree.
-        for (Transaction tx : transactions) {
-            final Sha256Hash id;
-            if (useWTxId && tx.isCoinBase())
-                id = Sha256Hash.ZERO_HASH;
-            else
-                id = useWTxId ? tx.getWTxId() : tx.getTxId();
-            tree.add(id.getBytes());
+        for (Transaction t : transactions) {
+            tree.add(t.getTxId().getBytes());
         }
         int levelOffset = 0; // Offset in the list where the currently processed level starts.
         // Step through each level, stopping when we reach the root (levelSize == 1).
@@ -668,7 +632,7 @@ public class Block extends Message {
                 int right = Math.min(left + 1, levelSize - 1);
                 byte[] leftBytes = Utils.reverseBytes(tree.get(levelOffset + left));
                 byte[] rightBytes = Utils.reverseBytes(tree.get(levelOffset + right));
-                tree.add(Utils.reverseBytes(hashTwice(leftBytes, rightBytes)));
+                tree.add(Utils.reverseBytes(hashTwice(leftBytes, 0, 32, rightBytes, 0, 32)));
             }
             // Move to the next level.
             levelOffset += levelSize;
@@ -783,15 +747,6 @@ public class Block extends Message {
         unCacheHeader();
         merkleRoot = value;
         hash = null;
-    }
-
-    /**
-     * Returns the witness root in big endian form, calculating it from transactions if necessary.
-     */
-    public Sha256Hash getWitnessRoot() {
-        if (witnessRoot == null)
-            witnessRoot = calculateWitnessRoot();
-        return witnessRoot;
     }
 
     /** Adds a transaction to this block. The nonce and merkle root are invalid after this. */
